@@ -1,59 +1,54 @@
-// api/proxy.js — Vercel Serverless Function
-// Menerima request dari frontend → forward ke Magnific API
-// Tidak ada CORS karena request terjadi server-to-server
+// api/proxy.js
+// Vercel Serverless Function — CORS Proxy ke Magnific API
+// Pakai CommonJS (module.exports) agar kompatibel dengan Vercel Node.js runtime
 
-export default async function handler(req, res) {
-  // Allow all origins (frontend bisa akses dari mana saja)
+module.exports = async function handler(req, res) {
+  // ── CORS Headers ──────────────────────────────────────────
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-magnific-api-key');
 
-  // Handle preflight OPTIONS request
+  // Handle preflight (browser kirim OPTIONS dulu sebelum POST)
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
+  // ── Validasi ──────────────────────────────────────────────
+  const { path } = req.query;
+  if (!path) {
+    return res.status(400).json({ error: 'Parameter "path" wajib diisi' });
+  }
+
+  const apiKey = req.headers['x-magnific-api-key'];
+  if (!apiKey) {
+    return res.status(401).json({ error: 'Header x-magnific-api-key tidak ada' });
+  }
+
+  // ── Forward ke Magnific API ────────────────────────────────
+  const targetUrl = `https://api.magnific.com/v1/ai${path}`;
+  console.log(`[proxy] ${req.method} ${targetUrl}`);
+
   try {
-    // Ambil path Magnific API dari query parameter
-    // Contoh: /api/proxy?path=/image-to-video/kling-v2-6
-    const { path } = req.query;
-
-    if (!path) {
-      return res.status(400).json({ error: 'Missing path parameter' });
-    }
-
-    // Ambil API key dari header yang dikirim frontend
-    const apiKey = req.headers['x-magnific-api-key'];
-    if (!apiKey) {
-      return res.status(401).json({ error: 'Missing API key' });
-    }
-
-    const targetUrl = `https://api.magnific.com/v1/ai${path}`;
-
-    // Forward request ke Magnific API
-    const magnificRes = await fetch(targetUrl, {
+    const fetchOptions = {
       method: req.method,
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
         'x-magnific-api-key': apiKey,
       },
-      // Teruskan body untuk POST request
-      ...(req.method === 'POST' && {
-        body: JSON.stringify(req.body),
-      }),
-    });
+    };
 
-    const data = await magnificRes.json();
+    if (req.method === 'POST' || req.method === 'PUT') {
+      fetchOptions.body = JSON.stringify(req.body);
+    }
 
-    // Teruskan status code asli dari Magnific
-    return res.status(magnificRes.status).json(data);
+    const upstream = await fetch(targetUrl, fetchOptions);
+    const data = await upstream.json();
 
-  } catch (error) {
-    console.error('Proxy error:', error);
-    return res.status(500).json({
-      error: 'Proxy server error',
-      message: error.message,
-    });
+    return res.status(upstream.status).json(data);
+
+  } catch (err) {
+    console.error('[proxy] error:', err);
+    return res.status(500).json({ error: 'Proxy error', message: err.message });
   }
-}
+};
